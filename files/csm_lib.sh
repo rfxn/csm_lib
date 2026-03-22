@@ -766,3 +766,416 @@ csm_translate_lmd() {
 
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Section 7: Config Application
+# ---------------------------------------------------------------------------
+
+# csm_report_add — append a line to the report buffer
+# Args: $1=line
+csm_report_add() {
+    _CSM_REPORT_LINES+=("$1")
+}
+
+# csm_apply_var — set a single variable in a target config file
+# In dry-run mode, reports the action instead of writing.
+# Args: $1=conf_file  $2=var_name  $3=value
+# Returns: 0 on success, 1 on error
+csm_apply_var() {
+    local conf_file="$1" var_name="$2" value="$3"
+    [[ -z "$conf_file" || -z "$var_name" ]] && return 1
+
+    if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+        csm_report_add "WOULD SET ${var_name}=${value} in ${conf_file}"
+        return 0
+    fi
+
+    pkg_config_set "$conf_file" "$var_name" "$value"
+}
+
+# csm_apply_all — apply all status=translated entries from norm store to a config file
+# Iterates _CSM_NORM_* arrays; calls csm_apply_var for each translated entry.
+# Args: $1=conf_file
+# Returns: 0 on success, 1 if conf_file is empty
+csm_apply_all() {
+    local conf_file="$1"
+    [[ -z "$conf_file" ]] && return 1
+
+    local i
+    for i in "${!_CSM_NORM_STATUS[@]}"; do
+        if [[ "${_CSM_NORM_STATUS[$i]}" == "translated" ]]; then
+            local dst="${_CSM_NORM_TARGET[$i]}"
+            local val="${_CSM_NORM_VALUES[$i]}"
+            [[ -z "$dst" ]] && continue
+            csm_apply_var "$conf_file" "$dst" "$val"
+        fi
+    done
+
+    return 0
+}
+
+# csm_apply_bfd_pressure — write PRESSURE_TRIP overrides to BFD pressure config
+# Writes or appends one "RULE=TRIP" line per entry in _CSM_BFD_RULES/_CSM_BFD_TRIPS.
+# In dry-run mode, reports each action instead of writing.
+# Args: $1=pressure_conf  (path to BFD rule pressure conf file)
+# Returns: 0 on success, 1 if pressure_conf is empty
+csm_apply_bfd_pressure() {
+    local pressure_conf="$1"
+    [[ -z "$pressure_conf" ]] && return 1
+
+    local i rule trip
+    for i in "${!_CSM_BFD_RULES[@]}"; do
+        rule="${_CSM_BFD_RULES[$i]}"
+        trip="${_CSM_BFD_TRIPS[$i]}"
+
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            csm_report_add "WOULD WRITE ${rule}=${trip} to ${pressure_conf}"
+        else
+            printf '%s="%s"\n' "$rule" "$trip" >> "$pressure_conf"
+        fi
+    done
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Section 8: Trust & File Migration
+# ---------------------------------------------------------------------------
+
+# csm_migrate_trust_allow — migrate csf.allow to rfxn allow_hosts.rules
+# Advanced filter entries (containing |) are transformed: pipe→colon.
+# Simple IP entries are copied directly.
+# Idempotent: greps dst before appending to avoid duplicates.
+# In dry-run mode, counts and reports only.
+# Args: $1=src (csf.allow path)  $2=dst (allow_hosts.rules path)
+# Returns: 0 on success, 1 if src is missing or empty
+csm_migrate_trust_allow() {
+    local src="$1" dst="$2"
+    [[ -z "$src" || ! -f "$src" ]] && return 1
+    [[ -z "$dst" ]] && return 1
+
+    local count=0 advanced=0
+    local line entry
+    local pipe_pat='.*\|.*'
+
+    while IFS= read -r line; do
+        line="${line%%[[:space:]]#*}"              # strip trailing comment
+        line="${line%$'\r'}"                       # strip CRLF
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+
+        if [[ "$line" =~ $pipe_pat ]]; then
+            # Advanced filter: replace all | with :
+            entry="${line//|/:}"
+            (( advanced++ )) || true
+        else
+            entry="$line"
+        fi
+
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            (( count++ )) || true
+        else
+            # Idempotent: skip if already present
+            if ! grep -qxF "$entry" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet (new install)
+                printf '%s\n' "$entry" >> "$dst"
+                (( count++ )) || true
+            fi
+        fi
+    done < "$src"
+
+    csm_report_add "csf.allow → allow_hosts.rules: ${count} entries (${advanced} advanced)"
+    return 0
+}
+
+# csm_migrate_trust_deny — migrate csf.deny to rfxn deny_hosts.rules
+# Same pipe→colon transform as allow.
+# Temp entries (containing #do not delete) get TTL computed from embedded timestamp.
+# date -d is used for TTL; if parse fails, entry is marked permanent.
+# In dry-run mode, counts and reports only.
+# Args: $1=src (csf.deny path)  $2=dst (deny_hosts.rules path)
+# Returns: 0 on success, 1 if src is missing or empty
+csm_migrate_trust_deny() {
+    local src="$1" dst="$2"
+    [[ -z "$src" || ! -f "$src" ]] && return 1
+    [[ -z "$dst" ]] && return 1
+
+    local count=0 temp_count=0
+    local line entry ip comment expire_ts now_ts ttl
+    local pipe_pat='.*\|.*'
+    local temp_pat='#do not delete'
+    local date_pat='[A-Z][a-z][a-z] [A-Z][a-z][a-z] +[0-9]+ [0-9:]+ [0-9]+'
+
+    now_ts=$(date +%s)
+
+    while IFS= read -r line; do
+        line="${line%$'\r'}"                       # strip CRLF
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+
+        if [[ "$line" == *"$temp_pat"* ]]; then
+            # Temp entry: extract IP, parse timestamp from comment
+            ip="${line%% *}"
+
+            # Extract date string between "lfd - (...service...) " and "#do not delete"
+            # Example: "1.2.3.4 # lfd - (sshd) Fri Mar 15 10:30:00 2026 #do not delete"
+            comment="${line#*# lfd - }"           # strip up to "lfd - "
+            comment="${comment%% #do not delete*}" # strip " #do not delete" suffix
+            comment="${comment#*(} "               # strip up to ") " (service name in parens)
+            comment="${comment#*) }"               # second pass in case first didn't match
+
+            # Try to parse the timestamp
+            expire_ts=""
+            if [[ "$comment" =~ $date_pat ]]; then
+                expire_ts=$(date -d "$comment" +%s 2>/dev/null) || expire_ts=""
+            fi
+
+            if [[ -n "$expire_ts" ]] && [[ "$expire_ts" -gt "$now_ts" ]]; then
+                ttl=$(( expire_ts - now_ts ))
+                entry="${ip} # ttl=${ttl} expire=${expire_ts}"
+            else
+                # Fallback: mark permanent (TTL parse failed or already expired)
+                entry="${ip} # permanent (temp entry — TTL parse failed)"
+            fi
+            (( temp_count++ )) || true
+        elif [[ "$line" =~ $pipe_pat ]]; then
+            ip="${line%% *}"
+            entry="${ip//|/:}"
+        else
+            # Plain entry: may have trailing comment; use first field for dedup key
+            ip="${line%% *}"
+            entry="$line"
+        fi
+
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            (( count++ )) || true
+        else
+            # Idempotent: skip if IP already in dest (match first field)
+            if ! grep -qE "^[[:space:]]*${ip}([[:space:]]|$)" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
+                printf '%s\n' "$entry" >> "$dst"
+                (( count++ )) || true
+            fi
+        fi
+    done < "$src"
+
+    csm_report_add "csf.deny → deny_hosts.rules: ${count} entries (${temp_count} temp → TTL)"
+    return 0
+}
+
+# csm_migrate_trust_sips — migrate csf.sips to rfxn silent_ips.rules
+# Direct copy with deduplication.
+# In dry-run mode, counts and reports only.
+# Args: $1=src (csf.sips path)  $2=dst (silent_ips.rules path)
+# Returns: 0 on success, 1 if src is missing or empty
+csm_migrate_trust_sips() {
+    local src="$1" dst="$2"
+    [[ -z "$src" || ! -f "$src" ]] && return 1
+    [[ -z "$dst" ]] && return 1
+
+    local count=0 line entry
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        entry="$line"
+
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            (( count++ )) || true
+        else
+            if ! grep -qxF "$entry" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
+                printf '%s\n' "$entry" >> "$dst"
+                (( count++ )) || true
+            fi
+        fi
+    done < "$src"
+
+    csm_report_add "csf.sips → silent_ips.rules: ${count} entries"
+    return 0
+}
+
+# csm_migrate_blocklists — migrate csf.blocklists (4-field) to rfxn ipset.rules (7-field)
+# CSF format:  NAME|INTERVAL|MAX|URL
+# rfxn format: name|type|url|interval|maxelem|action|description
+# Defaults added: type=hash:ip, action=DROP, description=Migrated from CSF
+# In dry-run mode, counts and reports only.
+# Args: $1=src (csf.blocklists path)  $2=dst (ipset.rules path)
+# Returns: 0 on success, 1 if src is missing or empty
+csm_migrate_blocklists() {
+    local src="$1" dst="$2"
+    [[ -z "$src" || ! -f "$src" ]] && return 1
+    [[ -z "$dst" ]] && return 1
+
+    local count=0 line name interval maxelem url entry
+    local field4_pat='^[^|]+\|[^|]+\|[^|]+\|[^|]+'
+    local rest
+
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+
+        # Only process well-formed 4-field lines
+        if [[ "$line" =~ $field4_pat ]]; then
+            name="${line%%|*}"
+            rest="${line#*|}"
+            interval="${rest%%|*}"
+            rest="${rest#*|}"
+            maxelem="${rest%%|*}"
+            url="${rest#*|}"
+
+            # Build 7-field rfxn entry
+            entry="${name}|hash:ip|${url}|${interval}|${maxelem}|DROP|Migrated from CSF"
+
+            if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+                (( count++ )) || true
+            else
+                if ! grep -qE "^${name}\|" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
+                    printf '%s\n' "$entry" >> "$dst"
+                    (( count++ )) || true
+                fi
+            fi
+        fi
+    done < "$src"
+
+    csm_report_add "csf.blocklists → ipset.rules: ${count} entries"
+    return 0
+}
+
+# csm_migrate_hooks — copy csfpre/csfpost scripts to rfxn hook_pre/hook_post
+# Copies csfpre.sh → hook_pre.sh and csfpost.sh → hook_post.sh.
+# Sets chmod 750 on each copied file.
+# Rewrites /etc/csf/ path references to ${install_path}/ using sed | delimiter.
+# In dry-run mode, reports actions only.
+# Args: $1=csf_dir  $2=install_path
+# Returns: 0 on success
+csm_migrate_hooks() {
+    local csf_dir="$1" install_path="$2"
+    [[ -z "$csf_dir" || -z "$install_path" ]] && return 1
+
+    local count=0
+    local -a hook_pairs
+    hook_pairs=("csfpre.sh:hook_pre.sh" "csfpost.sh:hook_post.sh")
+
+    local pair src_name dst_name src_path dst_path
+    for pair in "${hook_pairs[@]}"; do
+        src_name="${pair%%:*}"
+        dst_name="${pair#*:}"
+        src_path="${csf_dir}/${src_name}"
+        dst_path="${install_path}/${dst_name}"
+
+        if [[ ! -f "$src_path" ]]; then
+            csm_report_add "hook: ${src_name} not found — skipped"
+            continue
+        fi
+
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            csm_report_add "WOULD COPY ${src_path} → ${dst_path} (chmod 750, rewrite /etc/csf/ paths)"
+            (( count++ )) || true
+        else
+            command cp "$src_path" "$dst_path" || {
+                csm_report_add "hook: failed to copy ${src_name} → ${dst_name}"
+                continue
+            }
+            chmod 750 "$dst_path"
+            # Rewrite /etc/csf/ references to install_path — | delimiter safe (paths never contain |)
+            sed -i "s|/etc/csf/|${install_path}/|g" "$dst_path"
+            (( count++ )) || true
+            csm_report_add "${src_name} → ${dst_name} (chmod 750, paths rewritten)"
+        fi
+    done
+
+    csm_report_add "hooks migrated: ${count}"
+    return 0
+}
+
+# csm_migrate_lfd_ignore — migrate csf.ignore to BFD allow.hosts
+# Direct copy with deduplication (skip already-present entries).
+# In dry-run mode, counts and reports only.
+# Args: $1=src (csf.ignore path)  $2=dst (allow.hosts path)
+# Returns: 0 on success, 1 if src is missing or empty
+csm_migrate_lfd_ignore() {
+    local src="$1" dst="$2"
+    [[ -z "$src" || ! -f "$src" ]] && return 1
+    [[ -z "$dst" ]] && return 1
+
+    local count=0 line entry
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        entry="$line"
+
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            (( count++ )) || true
+        else
+            if ! grep -qxF "$entry" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
+                printf '%s\n' "$entry" >> "$dst"
+                (( count++ )) || true
+            fi
+        fi
+    done < "$src"
+
+    csm_report_add "csf.ignore → allow.hosts: ${count} entries"
+    return 0
+}
+
+# csm_migrate_cxs_ignore — translate CXS ignore rules to LMD ignore format
+# Reads cxs.ignore from cxs_dir, translates keyword types:
+#   file:  → LMD file ignore (hex.dat append)
+#   dir:   → LMD path ignore (path.dat append)
+#   pfile: → LMD regex ignore (regex.dat append — regex value preserved)
+#   ip:    → ignored (LMD does not scan by IP)
+# In dry-run mode, reports actions only.
+# Args: $1=cxs_dir  $2=install_path (LMD base dir for ignore dat files)
+# Returns: 0 on success, 1 if cxs.ignore not found
+csm_migrate_cxs_ignore() {
+    local cxs_dir="$1" install_path="$2"
+    [[ -z "$cxs_dir" || -z "$install_path" ]] && return 1
+
+    local ignore_file="${cxs_dir}/cxs.ignore"
+    [[ ! -f "$ignore_file" ]] && return 1
+
+    _csm_read_cxs_ignore "$ignore_file" || return 1
+
+    local count=0 i ktype kval dst_file entry
+    for i in "${!_CSM_CXS_IGNORE_TYPES[@]}"; do
+        ktype="${_CSM_CXS_IGNORE_TYPES[$i]}"
+        kval="${_CSM_CXS_IGNORE_VALUES[$i]}"
+
+        case "$ktype" in
+            file)
+                dst_file="${install_path}/ignore/hex.dat"
+                entry="$kval"
+                ;;
+            dir)
+                dst_file="${install_path}/ignore/path.dat"
+                entry="$kval"
+                ;;
+            pfile)
+                dst_file="${install_path}/ignore/regex.dat"
+                entry="$kval"
+                ;;
+            ip)
+                # LMD does not filter by IP — skip silently
+                csm_report_add "cxs.ignore: ip:${kval} — skipped (LMD has no IP-based ignore)"
+                continue
+                ;;
+            *)
+                csm_report_add "cxs.ignore: unknown type '${ktype}:${kval}' — skipped"
+                continue
+                ;;
+        esac
+
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            csm_report_add "WOULD WRITE ${ktype}:${kval} → ${dst_file}"
+            (( count++ )) || true
+        else
+            if ! grep -qxF "$entry" "$dst_file" 2>/dev/null; then  # 2>/dev/null: dst_file may not exist yet
+                printf '%s\n' "$entry" >> "$dst_file"
+                (( count++ )) || true
+            fi
+        fi
+    done
+
+    csm_report_add "cxs.ignore → LMD ignore files: ${count} entries"
+    return 0
+}

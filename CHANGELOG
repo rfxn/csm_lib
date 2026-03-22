@@ -1,6 +1,22 @@
 csm_lib CHANGELOG
 ==================
 
+- v1.0.0 | Mar 22 2026 (Phase 6):
+
+  [New] csm_report_add() — append line to report buffer
+  [New] csm_apply_var() — set single variable in target config via pkg_config_set; dry-run safe
+  [New] csm_apply_all() — apply all status=translated norm store entries to a config file
+  [New] csm_apply_bfd_pressure() — write per-rule PRESSURE_TRIP overrides from _CSM_BFD_RULES/_CSM_BFD_TRIPS
+  [New] csm_migrate_trust_allow() — csf.allow → allow_hosts.rules (pipe→colon, idempotent)
+  [New] csm_migrate_trust_deny() — csf.deny → deny_hosts.rules (pipe→colon, temp entry TTL via date -d)
+  [New] csm_migrate_trust_sips() — csf.sips → silent_ips.rules (direct copy with dedup)
+  [New] csm_migrate_blocklists() — csf.blocklists 4-field → ipset.rules 7-field (hash:ip, DROP defaults)
+  [New] csm_migrate_hooks() — csfpre/post → hook_pre/post (copy, chmod 750, /etc/csf/ path rewrite)
+  [New] csm_migrate_lfd_ignore() — csf.ignore → allow.hosts (direct copy with dedup)
+  [New] csm_migrate_cxs_ignore() — cxs.ignore keyword types → LMD ignore dat files
+  [New] 06-trust-migrate.bats — 22 tests: pipe→colon, CRLF, idempotency, blocklist expand, CXS ignore types, ip: skip
+  [New] 07-hooks.bats — 7 tests: copy, chmod 750, path rewrite, missing hook graceful handling
+
 - v1.0.0 | Mar 22 2026 (Phase 5):
 
   [New] _csm_map_lmd_init() — CXS→LMD mapping table (~27 entries: quarantine, alerts, scanner, scheduling, suspend, inotify/watch, gap vars)
