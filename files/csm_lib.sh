@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# csm_lib.sh — ConfigServer Migration Library 1.0.0
+# csm_lib.sh — ConfigServer Migration Library 0.1.0
 ###
 # Copyright (C) 2026 R-fx Networks <proj@rfxn.com>
 #                     Ryan MacDonald <ryan@rfxn.com>
@@ -36,7 +36,7 @@ if [[ -z "${_PKG_LIB_LOADED:-}" ]]; then
 fi
 
 # shellcheck disable=SC2034
-CSM_LIB_VERSION="1.0.0"
+CSM_LIB_VERSION="0.1.0"
 
 # --- Configuration variables (set by consumer before sourcing) ---
 CSM_CSF_CONF="${CSM_CSF_CONF:-/etc/csf/csf.conf}"
