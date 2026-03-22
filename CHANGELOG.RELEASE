@@ -1,6 +1,17 @@
 csm_lib CHANGELOG
 ==================
 
+- v1.0.0 | Mar 22 2026 (Phase 7):
+
+  [New] csm_neutralize() — full non-destructive disable (services, crons, executables) with FreeBSD guard and SELinux note
+  [New] _csm_neutralize_crons() — chmod 000 cron files matching product prefix globs in /etc/cron.d/
+  [New] _csm_neutralize_bins() — chmod 000 known executables per product (csf, lfd, cxs, cxswatch)
+  [New] _csm_record_perms() — record original permissions in _CSM_NEUTRALIZE_LOG before chmod
+  [New] Rollback command generation in report after neutralize
+  [New] CSM_DRY_RUN=1 gate on neutralize functions (WOULD prefix, no file writes)
+  [New] 08-neutralize.bats — 12 tests: perm recording, cron chmod, glob matching, dry-run gate, unknown product, SELinux note
+  [New] 09-dryrun.bats — 9 tests: apply_var no-write, apply_all no-write, trust_allow no-write, neutralize no-chmod, log empty in dry-run, translation still runs, WOULD prefix in report
+
 - v1.0.0 | Mar 22 2026 (Phase 6):
 
   [New] csm_report_add() — append line to report buffer

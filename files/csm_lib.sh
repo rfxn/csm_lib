@@ -1179,3 +1179,158 @@ csm_migrate_cxs_ignore() {
     csm_report_add "cxs.ignore → LMD ignore files: ${count} entries"
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Section 9: Neutralization
+# ---------------------------------------------------------------------------
+#
+# Non-destructive disable for CSF/LFD/CXS products.
+# Three-layer approach: stop+disable services, chmod 000 cron files,
+# chmod 000 executables.  Original permissions recorded in _CSM_NEUTRALIZE_LOG
+# for exact rollback.  All functions respect CSM_DRY_RUN.
+
+# _csm_record_perms — record original permissions of a file before chmod
+# Appends "path|perms" to _CSM_NEUTRALIZE_LOG.
+# Args: $1=path
+# Returns: 0 if stat succeeded, 1 if file not found
+_csm_record_perms() {
+    local path="$1"
+    [[ -z "$path" ]] && return 1
+    [[ ! -e "$path" ]] && return 1
+    local perms
+    perms=$(stat -c '%a' "$path" 2>/dev/null) || return 1  # 2>/dev/null: stat fails gracefully on unreadable/missing files
+    _CSM_NEUTRALIZE_LOG+=("${path}|${perms}")
+    return 0
+}
+
+# _csm_neutralize_crons — chmod 000 cron files matching product globs
+# Globs /etc/cron.d/${product}_* and /etc/cron.d/${product}-*.
+# Records original permissions.  In dry-run mode, reports WOULD actions.
+# Args: $1=product  $2=cron_dir (default: /etc/cron.d)
+_csm_neutralize_crons() {
+    local product="$1" cron_dir="${2:-/etc/cron.d}"
+    [[ -z "$product" ]] && return 1
+
+    local f
+    for f in "${cron_dir}/${product}_"* "${cron_dir}/${product}-"*; do
+        [[ -e "$f" ]] || continue  # glob expanded to literal pattern — skip
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            local dry_perms
+            dry_perms=$(stat -c '%a' "$f" 2>/dev/null) || dry_perms="unknown"  # 2>/dev/null: stat fails gracefully on unreadable files
+            csm_report_add "WOULD chmod 000 ${f} (was ${dry_perms})"
+        else
+            _csm_record_perms "$f"
+            command chmod 000 "$f"
+        fi
+    done
+    return 0
+}
+
+# _csm_neutralize_bins — chmod 000 known executables for a product
+# Uses a case statement to map product name to known binary paths.
+# Records original permissions.  In dry-run mode, reports WOULD actions.
+# Unknown product: returns 1.
+# Args: $1=product
+_csm_neutralize_bins() {
+    local product="$1"
+    [[ -z "$product" ]] && return 1
+
+    local bins=()
+    case "$product" in
+        csf)
+            bins+=("/usr/sbin/csf")
+            ;;
+        lfd)
+            bins+=("/usr/sbin/lfd")
+            ;;
+        cxs)
+            bins+=("/usr/sbin/cxs")
+            ;;
+        cxswatch)
+            bins+=("/etc/cxs/cxswatch.sh")
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    local b
+    for b in "${bins[@]}"; do
+        [[ -e "$b" ]] || continue  # binary absent — skip silently
+        if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+            local dry_perms
+            dry_perms=$(stat -c '%a' "$b" 2>/dev/null) || dry_perms="unknown"  # 2>/dev/null: stat fails gracefully on unreadable files
+            csm_report_add "WOULD chmod 000 ${b} (was ${dry_perms})"
+        else
+            _csm_record_perms "$b"
+            command chmod 000 "$b"
+        fi
+    done
+    return 0
+}
+
+# csm_neutralize — full non-destructive disable for a product
+# Three layers: stop+disable service, chmod 000 crons, chmod 000 executables.
+# FreeBSD: pkg_service_stop/disable return 1 with a warning — we log and continue.
+# SELinux note: emitted in report (context labels not restored by chmod alone).
+# Unknown product: returns 1 immediately.
+# After all file operations, appends rollback commands to report.
+# Args: $1=product  $2=cron_dir (optional, default /etc/cron.d)
+# Returns: 0 on success, 1 on unknown product
+csm_neutralize() {
+    local product="$1" cron_dir="${2:-/etc/cron.d}"
+    [[ -z "$product" ]] && return 1
+
+    case "$product" in
+        csf|lfd|cxs|cxswatch) ;;
+        *)
+            csm_report_add "csm_neutralize: unknown product '${product}'"
+            return 1
+            ;;
+    esac
+
+    # --- Service stop + disable ---
+    if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
+        csm_report_add "WOULD stop service: ${product}"
+        csm_report_add "WOULD disable service: ${product}"
+    else
+        # pkg_service_stop/disable return 1 on FreeBSD (built-in guard)
+        if ! pkg_service_stop "$product"; then  # non-zero: service already stopped, not found, or FreeBSD
+            csm_report_add "WARNING: service stop '${product}' failed or not supported — continuing"
+        else
+            csm_report_add "${product}.service: stopped"
+        fi
+        if ! pkg_service_disable "$product"; then  # non-zero: already disabled, not found, or FreeBSD
+            csm_report_add "WARNING: service disable '${product}' failed or not supported — continuing"
+        else
+            csm_report_add "${product}.service: disabled"
+        fi
+    fi
+
+    # --- Cron files: cxswatch has no cron globs ---
+    if [[ "$product" != "cxswatch" ]]; then
+        _csm_neutralize_crons "$product" "$cron_dir"
+    fi
+
+    # --- Executables ---
+    _csm_neutralize_bins "$product"
+
+    # --- SELinux note ---
+    csm_report_add "NOTE: SELinux context labels are not modified by neutralization — restore with restorecon if needed"
+
+    # --- Rollback commands ---
+    if [[ "${CSM_DRY_RUN:-0}" != "1" && "${#_CSM_NEUTRALIZE_LOG[@]}" -gt 0 ]]; then
+        csm_report_add "--- Rollback Commands ---"
+        local i entry path perms
+        for i in "${!_CSM_NEUTRALIZE_LOG[@]}"; do
+            entry="${_CSM_NEUTRALIZE_LOG[$i]}"
+            path="${entry%%|*}"
+            perms="${entry#*|}"
+            csm_report_add "  chmod ${perms} ${path}"
+        done
+        csm_report_add "  systemctl enable ${product}"
+        csm_report_add "  systemctl start ${product}"
+    fi
+
+    return 0
+}
