@@ -1,0 +1,7 @@
+# Simple IPs
+10.0.0.1
+192.168.1.0/24
+# Advanced filter
+tcp|in|d=22|s=10.0.0.0/8
+tcp|in|d=80,443|s=172.16.0.0/12
+# Comment line

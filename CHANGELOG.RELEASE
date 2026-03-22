@@ -1,7 +1,17 @@
 csm_lib CHANGELOG
 ==================
 
-- v1.0.0 | Mar 22 2026:
+- v1.0.0 | Mar 22 2026 (Phase 2):
+
+  [New] csm_detect_csf(), csm_detect_lfd(), csm_detect_cxs() — product detection
+  [New] csm_read_var() — single-var Perl-style + shell-style config parser with CRLF handling
+  [New] csm_read_conf() — bulk config parser with CRLF handling
+  [New] _csm_read_cxs_ignore() — CXS keyword-based ignore file parser
+  [New] _csm_norm_add(), _csm_norm_find() — normalization store helpers
+  [New] Test fixtures: mock CSF config, trust lists, hooks, CXS config, ignore files
+  [New] 01-detection.bats (11 tests), 02-config-parse.bats (18 tests)
+
+- v1.0.0 | Mar 22 2026 (Phase 1):
 
   [New] Initial release — ConfigServer Migration Library
   [New] CSF/LFD/CXS detection via config file and binary checks

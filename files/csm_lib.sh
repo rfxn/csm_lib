@@ -86,3 +86,166 @@ csm_reset() {
     _CSM_LFD_FOUND=0
     _CSM_CXS_FOUND=0
 }
+
+# ---------------------------------------------------------------------------
+# Section 1: Detection
+# ---------------------------------------------------------------------------
+
+# csm_detect_csf — check for CSF config and binary
+# Returns: 0 if CSF detected, 1 if absent
+# Sets: _CSM_CSF_VERSION
+csm_detect_csf() {
+    if [[ ! -f "$CSM_CSF_CONF" ]]; then
+        return 1
+    fi
+    local ver
+    ver=$(csm_read_var "$CSM_CSF_CONF" "VERSION")
+    _CSM_CSF_VERSION="${ver:-unknown}"
+    return 0
+}
+
+# csm_detect_lfd — check for LFD binary (co-resident with CSF)
+# Returns: 0 if LFD detected, 1 if absent
+csm_detect_lfd() {
+    if command -v lfd >/dev/null 2>&1; then  # lfd binary exists
+        _CSM_LFD_FOUND=1
+        return 0
+    fi
+    # LFD is co-resident with CSF — check CSF config for LF_ vars
+    if [[ -f "$CSM_CSF_CONF" ]]; then
+        local lf_val
+        lf_val=$(csm_read_var "$CSM_CSF_CONF" "LF_SSHD")
+        if [[ -n "$lf_val" ]]; then
+            _CSM_LFD_FOUND=1
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# csm_detect_cxs — check for CXS config and binary
+# Returns: 0 if CXS detected, 1 if absent
+csm_detect_cxs() {
+    if [[ ! -f "$CSM_CXS_DEFAULTS" ]]; then
+        return 1
+    fi
+    _CSM_CXS_FOUND=1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Section 2: Config Parsing
+# ---------------------------------------------------------------------------
+
+# csm_read_var — read single variable from config file
+# Handles both Perl-style (VAR = "val") and shell-style (VAR="val")
+# Args: $1=conf_file  $2=var_name
+# Prints: value (stripped of quotes)
+# Returns: 0 if found, 1 if not found or file missing
+csm_read_var() {
+    local conf_file="$1" var_name="$2"
+    [[ -z "$conf_file" || -z "$var_name" ]] && return 1
+    [[ ! -f "$conf_file" ]] && return 1
+    awk -v var="$var_name" '
+    { gsub(/\r$/, "", $0) }   # strip CRLF
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+        # Match VAR = "val" or VAR="val" or VAR = val
+        if (match($0, "^[[:space:]]*" var "[[:space:]]*=[[:space:]]*")) {
+            val = substr($0, RSTART + RLENGTH)
+            # Strip leading/trailing quotes
+            gsub(/^["'"'"']|["'"'"']$/, "", val)
+            # Strip trailing comments (only if preceded by whitespace+#)
+            sub(/[[:space:]]+#.*$/, "", val)
+            print val
+            found = 1
+            exit
+        }
+    }
+    END { exit (found ? 0 : 1) }
+    ' "$conf_file"
+}
+
+# csm_read_conf — bulk-read all variables from config file
+# Populates: _CSM_RAW_NAMES[], _CSM_RAW_VALUES[]
+# Args: $1=conf_file
+# Returns: 0 on success, 1 on error
+csm_read_conf() {
+    local conf_file="$1"
+    [[ -z "$conf_file" || ! -f "$conf_file" ]] && return 1
+    _CSM_RAW_NAMES=()
+    _CSM_RAW_VALUES=()
+    local line name val
+    local var_pat='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)'
+    while IFS= read -r line; do
+        # Skip comments and blank lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        # Match VAR = "val" or VAR="val"
+        if [[ "$line" =~ $var_pat ]]; then
+            name="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            # Strip quotes
+            val="${val#\"}"
+            val="${val%\"}"
+            val="${val#\'}"
+            val="${val%\'}"
+            # Strip trailing comment
+            val="${val%%[[:space:]]#*}"
+            _CSM_RAW_NAMES+=("$name")
+            _CSM_RAW_VALUES+=("$val")
+        fi
+    done < <(sed 's/\r$//' "$conf_file")  # strip CRLF
+}
+
+# _csm_read_cxs_ignore — parse CXS keyword-based ignore file
+# Populates: _CSM_CXS_IGNORE_TYPES[], _CSM_CXS_IGNORE_VALUES[]
+# Args: $1=ignore_file
+_csm_read_cxs_ignore() {
+    local ignore_file="$1"
+    [[ -z "$ignore_file" || ! -f "$ignore_file" ]] && return 1
+    _CSM_CXS_IGNORE_TYPES=()
+    _CSM_CXS_IGNORE_VALUES=()
+    local line ktype kval
+    while IFS= read -r line; do
+        line="${line%%[[:space:]]#*}"  # strip trailing comment
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        if [[ "$line" == *:* ]]; then
+            ktype="${line%%:*}"
+            kval="${line#*:}"
+            _CSM_CXS_IGNORE_TYPES+=("$ktype")
+            _CSM_CXS_IGNORE_VALUES+=("$kval")
+        fi
+    done < "$ignore_file"
+}
+
+# ---------------------------------------------------------------------------
+# Section 3: Normalization Store
+# ---------------------------------------------------------------------------
+
+# _csm_norm_add — add entry to normalized store
+# Args: $1=src_name  $2=src_value  $3=status  $4=target
+_csm_norm_add() {
+    local src_name="$1" src_value="$2" status="$3" target="${4:-}"
+    _CSM_NORM_NAMES+=("$src_name")
+    _CSM_NORM_VALUES+=("$src_value")
+    _CSM_NORM_STATUS+=("$status")
+    _CSM_NORM_TARGET+=("$target")
+}
+
+# _csm_norm_find — find index of entry by source name
+# Sets: _CSM_NORM_RESULT (index or -1)
+# Args: $1=src_name
+_csm_norm_find() {
+    local src_name="$1" i
+    _CSM_NORM_RESULT=-1
+    for i in "${!_CSM_NORM_NAMES[@]}"; do
+        if [[ "${_CSM_NORM_NAMES[$i]}" == "$src_name" ]]; then
+            _CSM_NORM_RESULT="$i"
+            return 0
+        fi
+    done
+    return 1
+}

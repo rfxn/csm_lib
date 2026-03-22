@@ -1,0 +1,2 @@
+SPAMDROP|86400|0|https://www.spamhaus.org/drop/drop.txt
+DSHIELD|86400|0|https://feeds.dshield.org/block.txt
