@@ -1,6 +1,14 @@
 csm_lib CHANGELOG
 ==================
 
+- v1.0.0 | Mar 22 2026 (Phase 3):
+
+  [New] _csm_xfm_apply() — transform dispatcher (direct, direct+egf, direct+rgt, append_s, sep_semi_colon, expand_drop, parse_rate, gap, log_bfd)
+  [New] _csm_map_apf_init() — CSF→APF mapping table (~40 entries across port filtering, network, protection, SMTP, deny/expiry, gap vars, LFD redirects)
+  [New] csm_translate_apf() — bulk translation with full normalization pass; unmapped vars receive status "unmapped"
+  [New] 03-translate-apf.bats — 16 tests covering all transform types, gap, log_bfd, unmapped, re-entry safety
+  [Change] tests/fixtures/csf/csf.conf — added SMTP_ALLOWGROUP, UDPFLOOD_BURST, UDPFLOOD_ALLOWUSER for full mapping table coverage
+
 - v1.0.0 | Mar 22 2026 (Phase 2):
 
   [New] csm_detect_csf(), csm_detect_lfd(), csm_detect_cxs() — product detection
