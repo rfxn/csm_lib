@@ -567,3 +567,202 @@ csm_translate_bfd() {
 
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Section 6: CXS→LMD Translation
+# ---------------------------------------------------------------------------
+
+# Mapping table arrays (populated by _csm_map_lmd_init)
+# Transform types:
+#   direct      — copy value verbatim
+#   watch_mode  — CXS_WATCH: "1"→"users", "0"→"disabled"
+#   bytes_to_k  — divide bytes value by 1024 (integer)
+#   gap         — no LMD equivalent; record status="gap"
+_CSM_MAP_LMD_SRC=()
+_CSM_MAP_LMD_DST=()
+_CSM_MAP_LMD_XFM=()
+
+# _csm_map_lmd_init — populate CXS→LMD mapping table
+# Populates: _CSM_MAP_LMD_SRC[], _CSM_MAP_LMD_DST[], _CSM_MAP_LMD_XFM[]
+_csm_map_lmd_init() {
+    _CSM_MAP_LMD_SRC=(); _CSM_MAP_LMD_DST=(); _CSM_MAP_LMD_XFM=()
+    # Format: SRC (CXS var) | DST (LMD var) | XFM (transform type)
+
+    # --- Quarantine ---
+    _CSM_MAP_LMD_SRC+=("CXS_QUARANTINE");       _CSM_MAP_LMD_DST+=("quarantine_hits");      _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_QUARANTINE_CLEAN"); _CSM_MAP_LMD_DST+=("quarantine_clean");     _CSM_MAP_LMD_XFM+=("direct")
+
+    # --- Alerts ---
+    _CSM_MAP_LMD_SRC+=("CXS_ALERT");            _CSM_MAP_LMD_DST+=("email_alert");          _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_ALERT_TO");         _CSM_MAP_LMD_DST+=("email_addr");           _CSM_MAP_LMD_XFM+=("direct")
+
+    # --- Scanner ---
+    _CSM_MAP_LMD_SRC+=("CXS_CLAMAV");           _CSM_MAP_LMD_DST+=("scan_clamscan");        _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_NICE");             _CSM_MAP_LMD_DST+=("scan_nice");            _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_IONICE");           _CSM_MAP_LMD_DST+=("scan_ionice");          _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_MAXFILESIZE");      _CSM_MAP_LMD_DST+=("scan_max_filesize");    _CSM_MAP_LMD_XFM+=("bytes_to_k")
+    _CSM_MAP_LMD_SRC+=("CXS_MAXDEPTH");         _CSM_MAP_LMD_DST+=("scan_max_depth");       _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_SCANDAYS");         _CSM_MAP_LMD_DST+=("scan_recent_files");    _CSM_MAP_LMD_XFM+=("direct")
+
+    # --- Scheduling / updates ---
+    _CSM_MAP_LMD_SRC+=("CXS_CRON");             _CSM_MAP_LMD_DST+=("cron_daily_scan");      _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_AUTOUPDATE");       _CSM_MAP_LMD_DST+=("autoupdate");           _CSM_MAP_LMD_XFM+=("direct")
+
+    # --- Suspend ---
+    _CSM_MAP_LMD_SRC+=("CXS_SUSPEND");          _CSM_MAP_LMD_DST+=("suspend_user");         _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_SUSPEND_MINUID");   _CSM_MAP_LMD_DST+=("suspend_user_minuid");  _CSM_MAP_LMD_XFM+=("direct")
+
+    # --- Inotify / watch ---
+    _CSM_MAP_LMD_SRC+=("CXS_WATCH");            _CSM_MAP_LMD_DST+=("default_monitor_mode"); _CSM_MAP_LMD_XFM+=("watch_mode")
+    _CSM_MAP_LMD_SRC+=("CXS_WATCH_DOCROOT");    _CSM_MAP_LMD_DST+=("monitor_docroot");      _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_WATCH_MINUID");     _CSM_MAP_LMD_DST+=("inotify_minuid");       _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_WATCH_SLEEP");      _CSM_MAP_LMD_DST+=("inotify_sleep");        _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_WATCH_NICE");       _CSM_MAP_LMD_DST+=("inotify_nice");         _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_WATCH_IONICE");     _CSM_MAP_LMD_DST+=("inotify_ionice");       _CSM_MAP_LMD_XFM+=("direct")
+    _CSM_MAP_LMD_SRC+=("CXS_WATCH_WATCHES");    _CSM_MAP_LMD_DST+=("inotify_watches");      _CSM_MAP_LMD_XFM+=("direct")
+
+    # --- Gap variables: no LMD equivalent ---
+    _CSM_MAP_LMD_SRC+=("CXS_FTP_UPLOAD");       _CSM_MAP_LMD_DST+=("no LMD equivalent");    _CSM_MAP_LMD_XFM+=("gap")
+    _CSM_MAP_LMD_SRC+=("CXS_CGI_UPLOAD");       _CSM_MAP_LMD_DST+=("no LMD equivalent");    _CSM_MAP_LMD_XFM+=("gap")
+    _CSM_MAP_LMD_SRC+=("CXS_UI_APP");           _CSM_MAP_LMD_DST+=("no LMD equivalent");    _CSM_MAP_LMD_XFM+=("gap")
+    _CSM_MAP_LMD_SRC+=("CXS_UI_TYPE");          _CSM_MAP_LMD_DST+=("no LMD equivalent");    _CSM_MAP_LMD_XFM+=("gap")
+    _CSM_MAP_LMD_SRC+=("CXS_UI_ADMIN");         _CSM_MAP_LMD_DST+=("no LMD equivalent");    _CSM_MAP_LMD_XFM+=("gap")
+}
+
+# csm_translate_lmd — translate CXS config to LMD equivalents
+# 1. Reads raw config from CSM_CXS_DEFAULTS first, then merges CSM_CXS_WATCHCONF
+# 2. Applies mapping table transforms
+# 3. Auto-sets scan_yara="1" (LMD always enables YARA when available)
+# 4. Captures cxswatch.sh CLI invocation line for report reference
+# Sets: _CSM_NORM_NAMES[], _CSM_NORM_VALUES[], _CSM_NORM_STATUS[], _CSM_NORM_TARGET[]
+#       _CSM_REPORT_LINES[] — appended with CXS script CLI line (if found)
+# Returns: 0 on success, 1 if cxs.defaults missing
+csm_translate_lmd() {
+    # Reset norm store for re-entry safety
+    _CSM_NORM_NAMES=()
+    _CSM_NORM_VALUES=()
+    _CSM_NORM_STATUS=()
+    _CSM_NORM_TARGET=()
+
+    [[ ! -f "$CSM_CXS_DEFAULTS" ]] && return 1
+
+    # --- Multi-file read: cxs.defaults first, then merge cxswatch.conf ---
+    csm_read_conf "$CSM_CXS_DEFAULTS" || return 1
+
+    # Merge cxswatch.conf into raw arrays (watchconf values override on key clash)
+    if [[ -f "$CSM_CXS_WATCHCONF" ]]; then
+        local wline wname wval wi wk wv found_idx ri
+        local -a watch_names=()
+        local -a watch_values=()
+        local wvar_pat='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)'
+        while IFS= read -r wline; do
+            [[ "$wline" =~ ^[[:space:]]*# ]] && continue
+            [[ "$wline" =~ ^[[:space:]]*$ ]] && continue
+            if [[ "$wline" =~ $wvar_pat ]]; then
+                wname="${BASH_REMATCH[1]}"
+                wval="${BASH_REMATCH[2]}"
+                wval="${wval#\"}"
+                wval="${wval%\"}"
+                wval="${wval#\'}"
+                wval="${wval%\'}"
+                wval="${wval%%[[:space:]]#*}"
+                watch_names+=("$wname")
+                watch_values+=("$wval")
+            fi
+        done < <(sed 's/\r$//' "$CSM_CXS_WATCHCONF")
+
+        for wi in "${!watch_names[@]}"; do
+            wk="${watch_names[$wi]}"
+            wv="${watch_values[$wi]}"
+            found_idx=-1
+            for ri in "${!_CSM_RAW_NAMES[@]}"; do
+                if [[ "${_CSM_RAW_NAMES[$ri]}" == "$wk" ]]; then
+                    found_idx="$ri"
+                    break
+                fi
+            done
+            if [[ "$found_idx" -ge 0 ]]; then
+                _CSM_RAW_VALUES[found_idx]="$wv"
+            else
+                _CSM_RAW_NAMES+=("$wk")
+                _CSM_RAW_VALUES+=("$wv")
+            fi
+        done
+    fi
+
+    _csm_map_lmd_init
+
+    local -a _lmd_mapped_srcs=()
+    local mi raw_val raw_idx xfm dst src ri
+
+    for mi in "${!_CSM_MAP_LMD_SRC[@]}"; do
+        src="${_CSM_MAP_LMD_SRC[$mi]}"
+        dst="${_CSM_MAP_LMD_DST[$mi]}"
+        xfm="${_CSM_MAP_LMD_XFM[$mi]}"
+
+        # Find this src var in the merged raw array
+        raw_val=""
+        raw_idx=-1
+        for ri in "${!_CSM_RAW_NAMES[@]}"; do
+            if [[ "${_CSM_RAW_NAMES[$ri]}" == "$src" ]]; then
+                raw_val="${_CSM_RAW_VALUES[$ri]}"
+                raw_idx="$ri"
+                break
+            fi
+        done
+
+        # Skip if var not present in merged config
+        [[ "$raw_idx" -eq -1 ]] && continue
+
+        _lmd_mapped_srcs+=("$src")
+
+        case "$xfm" in
+            direct)
+                _csm_norm_add "$src" "$raw_val" "translated" "$dst"
+                ;;
+            watch_mode)
+                # CXS_WATCH: "1" → "users", anything else → "disabled"
+                local mode_val
+                if [[ "$raw_val" == "1" ]]; then
+                    mode_val="users"
+                else
+                    mode_val="disabled"
+                fi
+                _csm_norm_add "$src" "$mode_val" "translated" "$dst"
+                ;;
+            bytes_to_k)
+                # Divide integer byte value by 1024; non-numeric passes as 0
+                local k_val=0
+                local numeric_pat='^[0-9]+$'
+                if [[ "$raw_val" =~ $numeric_pat ]]; then
+                    k_val=$(( raw_val / 1024 ))
+                fi
+                _csm_norm_add "$src" "$k_val" "translated" "$dst"
+                ;;
+            gap)
+                _csm_norm_add "$src" "$raw_val" "gap" "$dst"
+                ;;
+            *)
+                _csm_norm_add "$src" "$raw_val" "translated" "$dst"
+                ;;
+        esac
+    done
+
+    # Auto-set scan_yara="1" — LMD always enables YARA when available
+    _csm_norm_add "scan_yara" "1" "translated" "scan_yara"
+
+    # Capture cxswatch.sh CLI invocation line for report reference
+    local cxs_script="${CSM_CXS_DIR}/cxswatch.sh"
+    if [[ -f "$cxs_script" ]]; then
+        local script_line
+        while IFS= read -r script_line; do
+            [[ "$script_line" =~ ^#! ]] && continue          # skip shebang
+            [[ "$script_line" =~ ^[[:space:]]*# ]] && continue  # skip comments
+            [[ "$script_line" =~ ^[[:space:]]*$ ]] && continue  # skip blank
+            _CSM_REPORT_LINES+=("CXS script CLI: ${script_line}")
+            break
+        done < "$cxs_script"
+    fi
+
+    return 0
+}

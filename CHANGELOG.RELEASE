@@ -1,6 +1,12 @@
 csm_lib CHANGELOG
 ==================
 
+- v1.0.0 | Mar 22 2026 (Phase 5):
+
+  [New] _csm_map_lmd_init() — CXS→LMD mapping table (~27 entries: quarantine, alerts, scanner, scheduling, suspend, inotify/watch, gap vars)
+  [New] csm_translate_lmd() — multi-file scan (cxs.defaults + cxswatch.conf merge), CXS_WATCH→monitor_mode transform, bytes→k conversion, scan_yara auto-set, cxswatch.sh CLI capture
+  [New] 05-translate-lmd.bats — 13 tests: direct maps, CXS_WATCH=1→users, CXS_WATCH=0→disabled, bytes→k, scan_yara, gap vars, script CLI, total count, missing-file, re-entry safety
+
 - v1.0.0 | Mar 22 2026 (Phase 4):
 
   [New] _csm_map_bfd_init() — LFD→BFD mapping table (8 pressure entries, 5 direct entries, 1 fixed entry)
