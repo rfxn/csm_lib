@@ -59,64 +59,107 @@ CSM_REPORT_FILE="/var/log/myapp/csm-migration.log"
 csm_detect_csf && echo "CSF detected"
 csm_detect_cxs && echo "CXS detected"
 
-# Read and normalize CSF configuration
-csm_read_conf
-csm_normalize_csf
-
-# Translate to APF/BFD
+# Translate to APF/BFD/LMD
 csm_translate_apf
 csm_translate_bfd
+csm_translate_lmd
+
+# Apply translated values to target configs
+csm_apply_all "/etc/apf/conf.apf"
+csm_apply_bfd_pressure "/etc/bfd/rules/custom.conf"
 
 # Migrate trust lists and hooks
-csm_migrate_trust
-csm_migrate_hooks
+csm_migrate_trust_allow "/etc/csf/csf.allow" "/etc/apf/allow_hosts.rules"
+csm_migrate_trust_deny  "/etc/csf/csf.deny"  "/etc/apf/deny_hosts.rules"
+csm_migrate_hooks "/etc/apf/scripts"
 
 # Neutralize ConfigServer services (non-destructive)
-csm_neutralize
+csm_neutralize csf
 
 # Generate migration report
-csm_report
+csm_report_emit
+csm_report_summary
 ```
 
 ## API Reference
 
 ### Detection
 
-| Function | Description | Returns |
-|---|---|---|
-| `csm_detect_csf` | Detect CSF via config file | 0 if found, 1 if not |
-| `csm_detect_lfd` | Detect LFD daemon | 0 if found, 1 if not |
-| `csm_detect_cxs` | Detect CXS via config file | 0 if found, 1 if not |
+| Function | Signature | Description | Returns |
+|---|---|---|---|
+| `csm_detect_csf` | `csm_detect_csf` | Detect CSF via `CSM_CSF_CONF`; sets `_CSM_CSF_VERSION` | 0 found, 1 absent |
+| `csm_detect_lfd` | `csm_detect_lfd` | Detect LFD binary or `LF_*` vars in CSF config | 0 found, 1 absent |
+| `csm_detect_cxs` | `csm_detect_cxs` | Detect CXS via `CSM_CXS_DEFAULTS` | 0 found, 1 absent |
 
 ### Configuration Parsing
 
-| Function | Description |
-|---|---|
-| `csm_read_var VAR FILE` | Read single variable from Perl-style or shell-style config |
-| `csm_read_conf` | Read all variables from `CSM_CSF_CONF` into `_CSM_RAW_*` arrays |
+| Function | Signature | Description |
+|---|---|---|
+| `csm_read_var` | `csm_read_var conf_file var_name` | Read single variable from Perl-style or shell-style config; prints value |
+| `csm_read_conf` | `csm_read_conf conf_file` | Bulk-read all variables into `_CSM_RAW_NAMES[]` / `_CSM_RAW_VALUES[]` |
 
 ### Translation
 
-| Function | Description |
-|---|---|
-| `csm_translate_apf` | Translate CSF variables to APF equivalents |
-| `csm_translate_bfd` | Translate LFD thresholds to BFD pressure model |
-| `csm_translate_lmd` | Translate CXS variables to LMD equivalents |
+| Function | Signature | Description |
+|---|---|---|
+| `csm_translate_apf` | `csm_translate_apf` | Translate CSF→APF (~40 mapped vars); populates norm store |
+| `csm_translate_bfd` | `csm_translate_bfd` | Translate LFD thresholds to BFD pressure model; populates `_CSM_BFD_RULES[]` |
+| `csm_translate_lmd` | `csm_translate_lmd` | Translate CXS→LMD (~27 mapped vars); reads `cxs.defaults` + `cxswatch.conf` |
 
-### Migration
+### Config Application
 
-| Function | Description |
-|---|---|
-| `csm_migrate_trust` | Migrate allow/deny/sips/blocklist entries |
-| `csm_migrate_hooks` | Copy and rewrite pre/post hook scripts |
+| Function | Signature | Description |
+|---|---|---|
+| `csm_apply_var` | `csm_apply_var conf_file var_name value` | Set single variable in target config (dry-run safe) |
+| `csm_apply_all` | `csm_apply_all conf_file` | Apply all `status=translated` norm store entries to config |
+| `csm_apply_bfd_pressure` | `csm_apply_bfd_pressure pressure_conf` | Write `PRESSURE_TRIP` overrides to BFD rule file |
 
-### Neutralization and Reporting
+### Trust List Migration
 
-| Function | Description |
-|---|---|
-| `csm_neutralize` | Non-destructively disable ConfigServer services/crons |
-| `csm_report` | Write structured migration report to `CSM_REPORT_FILE` |
-| `csm_reset` | Clear all state arrays for re-use |
+| Function | Signature | Description |
+|---|---|---|
+| `csm_migrate_trust_allow` | `csm_migrate_trust_allow src_file dst_file` | `csf.allow` → `allow_hosts.rules` (pipe→colon, idempotent) |
+| `csm_migrate_trust_deny` | `csm_migrate_trust_deny src_file dst_file` | `csf.deny` → `deny_hosts.rules` (temp entry TTL annotation) |
+| `csm_migrate_trust_sips` | `csm_migrate_trust_sips src_file dst_file` | `csf.sips` → `silent_ips.rules` (direct copy, dedup) |
+| `csm_migrate_blocklists` | `csm_migrate_blocklists src_file dst_file` | `csf.blocklists` 4-field → rfxn ipset 7-field format |
+| `csm_migrate_lfd_ignore` | `csm_migrate_lfd_ignore src_file dst_file` | `csf.ignore` → `allow.hosts` (direct copy, dedup) |
+| `csm_migrate_cxs_ignore` | `csm_migrate_cxs_ignore ignore_file dst_dir` | CXS keyword ignore file → LMD ignore `.dat` files |
+
+### Hook Migration
+
+| Function | Signature | Description |
+|---|---|---|
+| `csm_migrate_hooks` | `csm_migrate_hooks dst_dir` | Copy `csfpre/post.sh` → `hook_pre/post.sh`; chmod 750; rewrite `/etc/csf/` paths |
+
+### Neutralization
+
+| Function | Signature | Description |
+|---|---|---|
+| `csm_neutralize` | `csm_neutralize product [cron_dir]` | Stop+disable service, chmod 000 crons and executables (dry-run safe) |
+
+### Reporting
+
+| Function | Signature | Description |
+|---|---|---|
+| `csm_report_add` | `csm_report_add line` | Append a line to the internal report buffer |
+| `csm_report_emit` | `csm_report_emit` | Write structured report to `CSM_REPORT_FILE` (or stdout if unset) |
+| `csm_report_summary` | `csm_report_summary` | Print one-line summary: `Translated: N \| Gaps: N \| ...` |
+
+### Utility
+
+| Function | Signature | Description |
+|---|---|---|
+| `csm_reset` | `csm_reset` | Clear all state arrays for re-use across products |
+
+### Report Format
+
+`csm_report_emit` produces a human-readable report with sections for translated
+variables, gaps, unmapped vars, trust list migration, hooks, neutralization, and
+rollback commands. The final line is machine-parseable:
+
+```
+CSM_RESULT:translated=N:gaps=N:captured=N:trust=N:hooks=N:neutralized=N
+```
 
 ## Configuration Variables
 

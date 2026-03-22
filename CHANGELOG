@@ -1,6 +1,14 @@
 csm_lib CHANGELOG
 ==================
 
+- v1.0.0 | Mar 22 2026 (Phase 8):
+
+  [New] csm_report_emit() — structured migration report: translated, gaps, captured, trust lists, hooks, neutralization, rollback, summary, CSM_RESULT line
+  [New] csm_report_summary() — one-liner summary: "Translated: N | Gaps: N | Captured: N | Trust: N | Hooks: N | Neutralized: N"
+  [New] CSM_RESULT machine-parseable line: CSM_RESULT:translated=N:gaps=N:captured=N:trust=N:hooks=N:neutralized=N
+  [New] 10-report.bats — 10 tests: section presence, CSM_RESULT format, stdout fallback, empty-state header, summary format and count
+  [Change] README.md — finalized API reference with all public functions, signatures, and report format
+
 - v1.0.0 | Mar 22 2026 (Phase 7):
 
   [New] csm_neutralize() — full non-destructive disable (services, crons, executables) with FreeBSD guard and SELinux note

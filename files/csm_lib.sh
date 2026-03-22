@@ -1334,3 +1334,234 @@ csm_neutralize() {
 
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Section 10: Reporting
+# ---------------------------------------------------------------------------
+
+# csm_report_emit — write structured migration report
+# Sections: header, translated, gaps, captured/unmapped, trust lists,
+#           hooks, neutralization, rollback commands, summary, CSM_RESULT line.
+# Output: $CSM_REPORT_FILE if set, else stdout.
+# Returns: 0
+csm_report_emit() {
+    # --- Counts from norm store ---
+    local translated=0 gaps=0 captured=0
+    local i
+    for i in "${!_CSM_NORM_STATUS[@]}"; do
+        case "${_CSM_NORM_STATUS[$i]}" in
+            translated) translated=$(( translated + 1 )) ;;
+            gap)        gaps=$(( gaps + 1 ))             ;;
+            unmapped)   captured=$(( captured + 1 ))     ;;
+        esac
+    done
+
+    # --- Counts from report lines (trust, hooks, neutralized) ---
+    local trust=0 hooks=0 neutralized=0
+    local line arrow_pat chmod_pat hook_pat hook_count_pat
+    arrow_pat='→'
+    chmod_pat='chmod 000'
+    hook_pat='hooks migrated:'
+    hook_count_pat='^hooks migrated:[[:space:]]*([0-9]+)'
+    for line in "${_CSM_REPORT_LINES[@]}"; do
+        if [[ "$line" == *"$hook_pat"* ]]; then
+            # "hooks migrated: N" — extract N
+            if [[ "$line" =~ $hook_count_pat ]]; then
+                hooks="${BASH_REMATCH[1]}"
+            fi
+        fi
+        if [[ "$line" == *"$arrow_pat"* && "$line" != *"$hook_pat"* && "$line" != *"LFD feature"* && "$line" != *"planned"* ]]; then
+            trust=$(( trust + 1 ))
+        fi
+        if [[ "$line" == *"$chmod_pat"* || "$line" == *"WOULD chmod 000"* ]]; then
+            neutralized=$(( neutralized + 1 ))
+        fi
+    done
+    # Supplement trust count from _CSM_NEUTRALIZE_LOG (actual chmods)
+    # Count from report lines for trust also includes csf.allow entries; use
+    # _CSM_NEUTRALIZE_LOG length for neutralized when not in dry-run
+    if [[ "${CSM_DRY_RUN:-0}" != "1" && "${#_CSM_NEUTRALIZE_LOG[@]}" -gt 0 ]]; then
+        neutralized="${#_CSM_NEUTRALIZE_LOG[@]}"
+    fi
+
+    # --- Build output lines into array ---
+    local out=()
+    local datestamp
+    datestamp=$(date '+%Y-%m-%d %H:%M:%S')  # date always succeeds; no 2>/dev/null needed
+    local dry_label="no"
+    [[ "${CSM_DRY_RUN:-0}" == "1" ]] && dry_label="yes"
+
+    out+=("=== CSM Migration Report ===")
+    out+=("Date: ${datestamp}")
+    out+=("Dry-run: ${dry_label}")
+    out+=("")
+
+    # --- Translated section ---
+    out+=("--- Translated ---")
+    if [[ "$translated" -eq 0 ]]; then
+        out+=("  (none)")
+    else
+        for i in "${!_CSM_NORM_STATUS[@]}"; do
+            if [[ "${_CSM_NORM_STATUS[$i]}" == "translated" ]]; then
+                out+=("  ${_CSM_NORM_NAMES[$i]} => ${_CSM_NORM_TARGET[$i]} = ${_CSM_NORM_VALUES[$i]}")
+            fi
+        done
+    fi
+    out+=("")
+
+    # --- Gaps section ---
+    out+=("--- Gaps (no rfxn equivalent) ---")
+    if [[ "$gaps" -eq 0 ]]; then
+        out+=("  (none)")
+    else
+        for i in "${!_CSM_NORM_STATUS[@]}"; do
+            if [[ "${_CSM_NORM_STATUS[$i]}" == "gap" ]]; then
+                out+=("  ${_CSM_NORM_NAMES[$i]} (target: ${_CSM_NORM_TARGET[$i]})")
+            fi
+        done
+    fi
+    out+=("")
+
+    # --- Captured/Unmapped section ---
+    out+=("--- Captured (no mapping) ---")
+    if [[ "$captured" -eq 0 ]]; then
+        out+=("  (none)")
+    else
+        for i in "${!_CSM_NORM_STATUS[@]}"; do
+            if [[ "${_CSM_NORM_STATUS[$i]}" == "unmapped" ]]; then
+                out+=("  ${_CSM_NORM_NAMES[$i]} = ${_CSM_NORM_VALUES[$i]}")
+            fi
+        done
+    fi
+    out+=("")
+
+    # --- Trust Lists section ---
+    out+=("--- Trust Lists ---")
+    local trust_found=0
+    for line in "${_CSM_REPORT_LINES[@]}"; do
+        if [[ "$line" == *"$arrow_pat"* && "$line" != *"LFD feature"* && "$line" != *"planned"* && "$line" != *"WOULD COPY"* && "$line" != *"hook:"* ]]; then
+            out+=("  ${line}")
+            trust_found=1
+        fi
+    done
+    [[ "$trust_found" -eq 0 ]] && out+=("  (none)")
+    out+=("")
+
+    # --- Hooks section ---
+    out+=("--- Hooks ---")
+    local hooks_found=0
+    for line in "${_CSM_REPORT_LINES[@]}"; do
+        if [[ "$line" == *"hook"* || "$line" == *"WOULD COPY"* ]]; then
+            out+=("  ${line}")
+            hooks_found=1
+        fi
+    done
+    [[ "$hooks_found" -eq 0 ]] && out+=("  (none)")
+    out+=("")
+
+    # --- Neutralization section ---
+    out+=("--- Neutralization ---")
+    local neut_found=0
+    for line in "${_CSM_REPORT_LINES[@]}"; do
+        if [[ "$line" == *"$chmod_pat"* || "$line" == *"WOULD chmod"* || "$line" == *"service"* || "$line" == *"WOULD stop"* || "$line" == *"WOULD disable"* || "$line" == *"NOTE: SELinux"* ]]; then
+            out+=("  ${line}")
+            neut_found=1
+        fi
+    done
+    [[ "$neut_found" -eq 0 ]] && out+=("  (none)")
+    out+=("")
+
+    # --- Rollback Commands section ---
+    out+=("--- Rollback Commands ---")
+    if [[ "${#_CSM_NEUTRALIZE_LOG[@]}" -gt 0 ]]; then
+        local entry path perms
+        for i in "${!_CSM_NEUTRALIZE_LOG[@]}"; do
+            entry="${_CSM_NEUTRALIZE_LOG[$i]}"
+            path="${entry%%|*}"
+            perms="${entry#*|}"
+            out+=("  chmod ${perms} ${path}")
+        done
+    else
+        # Check report lines for rollback section from dry-run or neutralize
+        local in_rollback=0
+        for line in "${_CSM_REPORT_LINES[@]}"; do
+            if [[ "$line" == "--- Rollback Commands ---" ]]; then
+                in_rollback=1
+                continue
+            fi
+            if [[ "$in_rollback" -eq 1 && "$line" == "  chmod"* ]]; then
+                out+=("$line")
+            fi
+        done
+        [[ "$in_rollback" -eq 0 ]] && out+=("  (none)")
+    fi
+    out+=("")
+
+    # --- Summary line ---
+    out+=("--- Summary ---")
+    out+=("Translated: ${translated} | Gaps: ${gaps} | Captured: ${captured} | Trust: ${trust} | Hooks: ${hooks} | Neutralized: ${neutralized}")
+    out+=("")
+
+    # --- CSM_RESULT machine-parseable line ---
+    out+=("CSM_RESULT:translated=${translated}:gaps=${gaps}:captured=${captured}:trust=${trust}:hooks=${hooks}:neutralized=${neutralized}")
+
+    # --- Write output ---
+    if [[ -n "${CSM_REPORT_FILE:-}" ]]; then
+        local l
+        for l in "${out[@]}"; do
+            printf '%s\n' "$l"
+        done > "$CSM_REPORT_FILE"
+    else
+        local l
+        for l in "${out[@]}"; do
+            printf '%s\n' "$l"
+        done
+    fi
+
+    return 0
+}
+
+# csm_report_summary — print one-line migration summary to stdout
+# Format: "Translated: N | Gaps: N | Captured: N | Trust: N | Hooks: N | Neutralized: N"
+# Counts derived from norm store and _CSM_NEUTRALIZE_LOG.
+# Returns: 0
+csm_report_summary() {
+    local translated=0 gaps=0 captured=0
+    local i
+    for i in "${!_CSM_NORM_STATUS[@]}"; do
+        case "${_CSM_NORM_STATUS[$i]}" in
+            translated) translated=$(( translated + 1 )) ;;
+            gap)        gaps=$(( gaps + 1 ))             ;;
+            unmapped)   captured=$(( captured + 1 ))     ;;
+        esac
+    done
+
+    # Trust count: report lines with "→" (excluding noise)
+    local trust=0 hooks=0 neutralized=0
+    local line arrow_pat hook_count_pat
+    arrow_pat='→'
+    hook_count_pat='^hooks migrated:[[:space:]]*([0-9]+)'
+    for line in "${_CSM_REPORT_LINES[@]}"; do
+        if [[ "$line" == *"$arrow_pat"* && "$line" != *"LFD feature"* && "$line" != *"planned"* && "$line" != *"WOULD COPY"* && "$line" != *"hook:"* ]]; then
+            trust=$(( trust + 1 ))
+        fi
+        if [[ "$line" =~ $hook_count_pat ]]; then
+            hooks="${BASH_REMATCH[1]}"
+        fi
+    done
+
+    # Neutralized: prefer _CSM_NEUTRALIZE_LOG length; fall back to WOULD chmod count
+    if [[ "${#_CSM_NEUTRALIZE_LOG[@]}" -gt 0 ]]; then
+        neutralized="${#_CSM_NEUTRALIZE_LOG[@]}"
+    else
+        for line in "${_CSM_REPORT_LINES[@]}"; do
+            if [[ "$line" == *"chmod 000"* || "$line" == *"WOULD chmod 000"* ]]; then
+                neutralized=$(( neutralized + 1 ))
+            fi
+        done
+    fi
+
+    printf 'Translated: %d | Gaps: %d | Captured: %d | Trust: %d | Hooks: %d | Neutralized: %d\n' \
+        "$translated" "$gaps" "$captured" "$trust" "$hooks" "$neutralized"
+    return 0
+}
