@@ -1,0 +1,18 @@
+csm_lib CHANGELOG
+==================
+
+- v1.0.0 | Mar 22 2026:
+
+  [New] Initial release — ConfigServer Migration Library
+  [New] CSF/LFD/CXS detection via config file and binary checks
+  [New] Perl-style and shell-style config parser (csm_read_var, csm_read_conf)
+  [New] CSF→APF variable translation (~40 mapped, data-driven tables)
+  [New] LFD→BFD pressure model translation (threshold→trip formula)
+  [New] CXS→LMD variable translation (~30 mapped, multi-file scan)
+  [New] Trust list migration (allow, deny, silent IPs, blocklists)
+  [New] Hook script migration (copy, chmod 750, path rewrite)
+  [New] CXS ignore file translation to LMD format
+  [New] Non-destructive neutralization (services, crons, executables)
+  [New] Full dry-run mode via CSM_DRY_RUN=1
+  [New] Structured migration report with CSM_RESULT machine-parseable line
+  [New] Full variable normalization — all vars captured even without mapping

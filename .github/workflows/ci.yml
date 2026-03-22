@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [master, '1.*']
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Syntax check (bash -n)
+        run: bash -n files/csm_lib.sh tests/run-tests.sh
+      - name: Shellcheck
+        run: shellcheck files/csm_lib.sh tests/run-tests.sh
+
+  test:
+    needs: lint
+    uses: rfxn/batsman/.github/workflows/test.yml@v1.0.3
+    with:
+      project-name: csm
+      os-matrix: '["debian12","centos7","rocky8","rocky9","ubuntu2004","ubuntu2404"]'
