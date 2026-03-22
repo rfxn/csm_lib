@@ -474,3 +474,96 @@ csm_translate_apf() {
 
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Section 5: LFD→BFD Translation
+# ---------------------------------------------------------------------------
+
+# Mapping table arrays (populated by _csm_map_bfd_init)
+# Type "pressure": trip = min(trigger * 3, 200)
+# Type "direct":   trip = raw value verbatim
+# Type "fixed":    trip = fixed string override (ignores CSF value)
+_CSM_MAP_BFD_LF=()
+_CSM_MAP_BFD_RULE=()
+_CSM_MAP_BFD_TYPE=()
+_CSM_MAP_BFD_FIXED=()
+
+# _csm_map_bfd_init — populate LFD→BFD mapping table
+# Populates: _CSM_MAP_BFD_LF[], _CSM_MAP_BFD_RULE[], _CSM_MAP_BFD_TYPE[], _CSM_MAP_BFD_FIXED[]
+_csm_map_bfd_init() {
+    _CSM_MAP_BFD_LF=(); _CSM_MAP_BFD_RULE=(); _CSM_MAP_BFD_TYPE=(); _CSM_MAP_BFD_FIXED=()
+    # Format: LF_VAR | BFD_RULE | type | fixed_value (empty unless type=fixed)
+
+    # --- Pressure formula: trip = min(trigger * 3, 200) ---
+    _CSM_MAP_BFD_LF+=("LF_SSHD");        _CSM_MAP_BFD_RULE+=("SSHD");             _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_FTPD");        _CSM_MAP_BFD_RULE+=("FTPD");             _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_SMTPAUTH");    _CSM_MAP_BFD_RULE+=("SMTPAUTH");         _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_POP3D");       _CSM_MAP_BFD_RULE+=("POP3D");            _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_IMAPD");       _CSM_MAP_BFD_RULE+=("IMAPD");            _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_CPANEL");      _CSM_MAP_BFD_RULE+=("CPANEL");           _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_MODSEC");      _CSM_MAP_BFD_RULE+=("MODSEC");           _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_DIRECTADMIN"); _CSM_MAP_BFD_RULE+=("DIRECTADMIN");      _CSM_MAP_BFD_TYPE+=("pressure"); _CSM_MAP_BFD_FIXED+=("")
+
+    # --- Direct mappings: trip = raw value verbatim ---
+    _CSM_MAP_BFD_LF+=("LF_TRIGGER_PERM");       _CSM_MAP_BFD_RULE+=("BAN_TTL");             _CSM_MAP_BFD_TYPE+=("direct");   _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_ALERT_TO");           _CSM_MAP_BFD_RULE+=("EMAIL_ADDRESS");       _CSM_MAP_BFD_TYPE+=("direct");   _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_PERMBLOCK_COUNT");    _CSM_MAP_BFD_RULE+=("BAN_ESCALATE_AFTER");  _CSM_MAP_BFD_TYPE+=("direct");   _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_PERMBLOCK_INTERVAL"); _CSM_MAP_BFD_RULE+=("BAN_ESCALATE_WINDOW"); _CSM_MAP_BFD_TYPE+=("direct");   _CSM_MAP_BFD_FIXED+=("")
+    _CSM_MAP_BFD_LF+=("LF_NETBLOCK");           _CSM_MAP_BFD_RULE+=("SUBNET_TRIG");         _CSM_MAP_BFD_TYPE+=("direct");   _CSM_MAP_BFD_FIXED+=("")
+
+    # --- Fixed mapping: LF_SELECT always outputs "apf" (APF is the target firewall) ---
+    _CSM_MAP_BFD_LF+=("LF_SELECT");             _CSM_MAP_BFD_RULE+=("FIREWALL");            _CSM_MAP_BFD_TYPE+=("fixed");    _CSM_MAP_BFD_FIXED+=("apf")
+}
+
+# csm_translate_bfd — translate LFD config to BFD equivalents
+# Reads LF_* vars from CSM_CSF_CONF (LFD config lives in csf.conf)
+# Applies pressure formula or direct mapping per table entry
+# Populates: _CSM_BFD_RULES[], _CSM_BFD_TRIPS[]
+# Returns: 0 on success, 1 if config file missing
+csm_translate_bfd() {
+    # Reset BFD arrays for re-entry safety
+    _CSM_BFD_RULES=()
+    _CSM_BFD_TRIPS=()
+
+    [[ ! -f "$CSM_CSF_CONF" ]] && return 1
+
+    _csm_map_bfd_init
+
+    local mi lf_var rule_name map_type fixed_val
+    local trigger trip val
+
+    for mi in "${!_CSM_MAP_BFD_LF[@]}"; do
+        lf_var="${_CSM_MAP_BFD_LF[$mi]}"
+        rule_name="${_CSM_MAP_BFD_RULE[$mi]}"
+        map_type="${_CSM_MAP_BFD_TYPE[$mi]}"
+        fixed_val="${_CSM_MAP_BFD_FIXED[$mi]}"
+
+        case "$map_type" in
+            pressure)
+                trigger=$(csm_read_var "$CSM_CSF_CONF" "$lf_var") || true  # returns 1 when var absent; empty trigger skips entry
+                if [[ -n "$trigger" ]]; then
+                    trip=$(( trigger * 3 ))
+                    if [[ $trip -gt 200 ]]; then
+                        trip=200
+                    fi
+                    _CSM_BFD_RULES+=("$rule_name")
+                    _CSM_BFD_TRIPS+=("$trip")
+                fi
+                ;;
+            direct)
+                val=$(csm_read_var "$CSM_CSF_CONF" "$lf_var") || true  # returns 1 when var absent; empty val skips entry
+                if [[ -n "$val" ]]; then
+                    _CSM_BFD_RULES+=("$rule_name")
+                    _CSM_BFD_TRIPS+=("$val")
+                fi
+                ;;
+            fixed)
+                # Fixed always emits the rule regardless of whether var is in config
+                _CSM_BFD_RULES+=("$rule_name")
+                _CSM_BFD_TRIPS+=("$fixed_val")
+                ;;
+        esac
+    done
+
+    return 0
+}
