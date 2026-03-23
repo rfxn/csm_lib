@@ -1,7 +1,21 @@
 csm_lib CHANGELOG
 ==================
 
-- v0.1.0 | Mar 22 2026 (Phase 8):
+- v1.0.1 | Mar 22 2026 (Sentinel fixups):
+
+  [Fix] Tautological assertion in 02-config-parse.bats — `run` subshell discarded array mods; call csm_read_conf directly for array checks
+  [Fix] Unescaped IP dots in csm_migrate_trust_deny grep -qE regex — dots are ERE wildcards; escape via ${ip//./\\.}
+  [Fix] sed metachar injection in csm_migrate_hooks — escape & and \ in install_path before sed replacement
+  [Fix] Misleading test name "returns 1 for empty file" corrected to "returns 0 for empty file with zero entries parsed"
+  [Fix] "which" in comment at line 399 reworded to avoid grep false positive in verification pipeline
+  [New] csm_apply_bfd_pressure tests — 5 tests: write path, append, empty arg, dry-run no-write, dry-run WOULD WRITE report
+  [New] csm_translate_bfd re-entry safety test — calling twice gives same SSHD result (no duplication)
+  [New] csm_apply_var write-path integration test — verifies pkg_config_set delegation wiring
+  [Change] All 18 `|| true` instances now have required inline comments per governance
+  [Change] csm_translate_lmd duplicated parsing documented with design rationale (merge vs replace semantics)
+  [Change] Performance note added to csm_migrate_trust_allow header (per-entry grep O(n) acceptable for migration use)
+
+- v1.0.0 | Mar 22 2026 (Phase 8):
 
   [New] csm_report_emit() — structured migration report: translated, gaps, captured, trust lists, hooks, neutralization, rollback, summary, CSM_RESULT line
   [New] csm_report_summary() — one-liner summary: "Translated: N | Gaps: N | Captured: N | Trust: N | Hooks: N | Neutralized: N"
@@ -9,7 +23,7 @@ csm_lib CHANGELOG
   [New] 10-report.bats — 10 tests: section presence, CSM_RESULT format, stdout fallback, empty-state header, summary format and count
   [Change] README.md — finalized API reference with all public functions, signatures, and report format
 
-- v0.1.0 | Mar 22 2026 (Phase 7):
+- v1.0.0 | Mar 22 2026 (Phase 7):
 
   [New] csm_neutralize() — full non-destructive disable (services, crons, executables) with FreeBSD guard and SELinux note
   [New] _csm_neutralize_crons() — chmod 000 cron files matching product prefix globs in /etc/cron.d/
@@ -20,7 +34,7 @@ csm_lib CHANGELOG
   [New] 08-neutralize.bats — 12 tests: perm recording, cron chmod, glob matching, dry-run gate, unknown product, SELinux note
   [New] 09-dryrun.bats — 9 tests: apply_var no-write, apply_all no-write, trust_allow no-write, neutralize no-chmod, log empty in dry-run, translation still runs, WOULD prefix in report
 
-- v0.1.0 | Mar 22 2026 (Phase 6):
+- v1.0.0 | Mar 22 2026 (Phase 6):
 
   [New] csm_report_add() — append line to report buffer
   [New] csm_apply_var() — set single variable in target config via pkg_config_set; dry-run safe
@@ -36,19 +50,19 @@ csm_lib CHANGELOG
   [New] 06-trust-migrate.bats — 22 tests: pipe→colon, CRLF, idempotency, blocklist expand, CXS ignore types, ip: skip
   [New] 07-hooks.bats — 7 tests: copy, chmod 750, path rewrite, missing hook graceful handling
 
-- v0.1.0 | Mar 22 2026 (Phase 5):
+- v1.0.0 | Mar 22 2026 (Phase 5):
 
   [New] _csm_map_lmd_init() — CXS→LMD mapping table (~27 entries: quarantine, alerts, scanner, scheduling, suspend, inotify/watch, gap vars)
   [New] csm_translate_lmd() — multi-file scan (cxs.defaults + cxswatch.conf merge), CXS_WATCH→monitor_mode transform, bytes→k conversion, scan_yara auto-set, cxswatch.sh CLI capture
   [New] 05-translate-lmd.bats — 13 tests: direct maps, CXS_WATCH=1→users, CXS_WATCH=0→disabled, bytes→k, scan_yara, gap vars, script CLI, total count, missing-file, re-entry safety
 
-- v0.1.0 | Mar 22 2026 (Phase 4):
+- v1.0.0 | Mar 22 2026 (Phase 4):
 
   [New] _csm_map_bfd_init() — LFD→BFD mapping table (8 pressure entries, 5 direct entries, 1 fixed entry)
   [New] csm_translate_bfd() — pressure model formula (trip = min(trigger * 3, 200)), direct and fixed mappings
   [New] 04-translate-bfd.bats — 8 tests: pressure calibration, clamp boundary, trigger=0, direct BAN_TTL/EMAIL_ADDRESS, LF_SELECT→FIREWALL=apf
 
-- v0.1.0 | Mar 22 2026 (Phase 3):
+- v1.0.0 | Mar 22 2026 (Phase 3):
 
   [New] _csm_xfm_apply() — transform dispatcher (direct, direct+egf, direct+rgt, append_s, sep_semi_colon, expand_drop, parse_rate, gap, log_bfd)
   [New] _csm_map_apf_init() — CSF→APF mapping table (~40 entries across port filtering, network, protection, SMTP, deny/expiry, gap vars, LFD redirects)
@@ -56,7 +70,7 @@ csm_lib CHANGELOG
   [New] 03-translate-apf.bats — 16 tests covering all transform types, gap, log_bfd, unmapped, re-entry safety
   [Change] tests/fixtures/csf/csf.conf — added SMTP_ALLOWGROUP, UDPFLOOD_BURST, UDPFLOOD_ALLOWUSER for full mapping table coverage
 
-- v0.1.0 | Mar 22 2026 (Phase 2):
+- v1.0.0 | Mar 22 2026 (Phase 2):
 
   [New] csm_detect_csf(), csm_detect_lfd(), csm_detect_cxs() — product detection
   [New] csm_read_var() — single-var Perl-style + shell-style config parser with CRLF handling
@@ -66,7 +80,7 @@ csm_lib CHANGELOG
   [New] Test fixtures: mock CSF config, trust lists, hooks, CXS config, ignore files
   [New] 01-detection.bats (11 tests), 02-config-parse.bats (18 tests)
 
-- v0.1.0 | Mar 22 2026 (Phase 1):
+- v1.0.0 | Mar 22 2026 (Phase 1):
 
   [New] Initial release — ConfigServer Migration Library
   [New] CSF/LFD/CXS detection via config file and binary checks

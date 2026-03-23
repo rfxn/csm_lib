@@ -1,7 +1,7 @@
 # csm_lib — ConfigServer Migration Library
 
 [![CI](https://github.com/rfxn/csm_lib/actions/workflows/ci.yml/badge.svg)](https://github.com/rfxn/csm_lib/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/rfxn/csm_lib)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/rfxn/csm_lib)
 [![Bash](https://img.shields.io/badge/bash-4.1%2B-green.svg)](https://www.gnu.org/software/bash/)
 [![License](https://img.shields.io/badge/license-GPL%20v2-orange.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
 

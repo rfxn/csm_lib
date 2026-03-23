@@ -52,12 +52,12 @@ teardown() { csm_teardown; }
     [ "${#_CSM_RAW_NAMES[@]}" -eq "${#_CSM_RAW_VALUES[@]}" ]
 }
 
-@test "csm_read_conf returns 1 for empty file" {
+@test "csm_read_conf returns 0 for empty file with zero entries parsed" {
     local empty_conf="$TEST_TMPDIR/empty.conf"
     > "$empty_conf"
-    run csm_read_conf "$empty_conf"
-    [ "$status" -eq 0 ]
+    csm_read_conf "$empty_conf"
     [ "${#_CSM_RAW_NAMES[@]}" -eq 0 ]
+    [ "${#_CSM_RAW_VALUES[@]}" -eq 0 ]
 }
 
 @test "csm_read_conf returns 1 for missing file" {

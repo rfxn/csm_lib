@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# csm_lib.sh — ConfigServer Migration Library 0.1.0
+# csm_lib.sh — ConfigServer Migration Library 1.0.1
 ###
 # Copyright (C) 2026 R-fx Networks <proj@rfxn.com>
 #                     Ryan MacDonald <ryan@rfxn.com>
@@ -36,7 +36,7 @@ if [[ -z "${_PKG_LIB_LOADED:-}" ]]; then
 fi
 
 # shellcheck disable=SC2034
-CSM_LIB_VERSION="0.1.0"
+CSM_LIB_VERSION="1.0.1"
 
 # --- Configuration variables (set by consumer before sourcing) ---
 CSM_CSF_CONF="${CSM_CSF_CONF:-/etc/csf/csf.conf}"
@@ -396,7 +396,7 @@ csm_translate_apf() {
     csm_read_conf "$CSM_CSF_CONF" || return 1
     _csm_map_apf_init
 
-    # Build a lookup: which raw var names have been consumed by a mapping
+    # Build a lookup of raw var names that have been consumed by a mapping
     local -a _mapped_srcs=()
     local mi raw_val raw_idx xfm dst
 
@@ -649,7 +649,12 @@ csm_translate_lmd() {
     # --- Multi-file read: cxs.defaults first, then merge cxswatch.conf ---
     csm_read_conf "$CSM_CXS_DEFAULTS" || return 1
 
-    # Merge cxswatch.conf into raw arrays (watchconf values override on key clash)
+    # Merge cxswatch.conf into raw arrays (watchconf values override on key clash).
+    # Note: this intentionally duplicates csm_read_conf's parsing logic because
+    # csm_read_conf resets _CSM_RAW_* arrays, while here we merge into the
+    # already-populated arrays from the cxs.defaults read above. Extracting a
+    # shared helper would require adding a "merge vs replace" mode parameter to
+    # csm_read_conf, adding complexity without reducing lines.
     if [[ -f "$CSM_CXS_WATCHCONF" ]]; then
         local wline wname wval wi wk wv found_idx ri
         local -a watch_names=()
@@ -846,6 +851,8 @@ csm_apply_bfd_pressure() {
 # Advanced filter entries (containing |) are transformed: pipe→colon.
 # Simple IP entries are copied directly.
 # Idempotent: greps dst before appending to avoid duplicates.
+# Performance note: per-entry grep is O(n) forks. Acceptable for one-time migration
+# of typical allow lists (<500 entries). Not designed for bulk streaming use.
 # In dry-run mode, counts and reports only.
 # Args: $1=src (csf.allow path)  $2=dst (allow_hosts.rules path)
 # Returns: 0 on success, 1 if src is missing or empty
@@ -867,18 +874,18 @@ csm_migrate_trust_allow() {
         if [[ "$line" =~ $pipe_pat ]]; then
             # Advanced filter: replace all | with :
             entry="${line//|/:}"
-            (( advanced++ )) || true
+            (( advanced++ )) || true  # (( )) returns 1 when old value is 0 under set -e
         else
             entry="$line"
         fi
 
         if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
-            (( count++ )) || true
+            (( count++ )) || true  # (( )) returns 1 when old value is 0
         else
             # Idempotent: skip if already present
             if ! grep -qxF "$entry" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet (new install)
                 printf '%s\n' "$entry" >> "$dst"
-                (( count++ )) || true
+                (( count++ )) || true  # (( )) returns 1 when old value is 0
             fi
         fi
     done < "$src"
@@ -936,7 +943,7 @@ csm_migrate_trust_deny() {
                 # Fallback: mark permanent (TTL parse failed or already expired)
                 entry="${ip} # permanent (temp entry — TTL parse failed)"
             fi
-            (( temp_count++ )) || true
+            (( temp_count++ )) || true  # (( )) returns 1 when old value is 0
         elif [[ "$line" =~ $pipe_pat ]]; then
             ip="${line%% *}"
             entry="${ip//|/:}"
@@ -947,12 +954,14 @@ csm_migrate_trust_deny() {
         fi
 
         if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
-            (( count++ )) || true
+            (( count++ )) || true  # (( )) returns 1 when old value is 0
         else
-            # Idempotent: skip if IP already in dest (match first field)
-            if ! grep -qE "^[[:space:]]*${ip}([[:space:]]|$)" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
+            # Idempotent: skip if IP already in dest (match first field).
+            # Escape regex metacharacters in ip (dots in IPs are wildcards in ERE).
+            local ip_escaped="${ip//./\\.}"
+            if ! grep -qE "^[[:space:]]*${ip_escaped}([[:space:]]|$)" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
                 printf '%s\n' "$entry" >> "$dst"
-                (( count++ )) || true
+                (( count++ )) || true  # (( )) returns 1 when old value is 0
             fi
         fi
     done < "$src"
@@ -979,11 +988,11 @@ csm_migrate_trust_sips() {
         entry="$line"
 
         if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
-            (( count++ )) || true
+            (( count++ )) || true  # (( )) returns 1 when old value is 0
         else
             if ! grep -qxF "$entry" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
                 printf '%s\n' "$entry" >> "$dst"
-                (( count++ )) || true
+                (( count++ )) || true  # (( )) returns 1 when old value is 0
             fi
         fi
     done < "$src"
@@ -1026,11 +1035,12 @@ csm_migrate_blocklists() {
             entry="${name}|hash:ip|${url}|${interval}|${maxelem}|DROP|Migrated from CSF"
 
             if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
-                (( count++ )) || true
+                (( count++ )) || true  # (( )) returns 1 when old value is 0
             else
+                # name is an alphanumeric blocklist identifier (no regex metachar risk)
                 if ! grep -qE "^${name}\|" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
                     printf '%s\n' "$entry" >> "$dst"
-                    (( count++ )) || true
+                    (( count++ )) || true  # (( )) returns 1 when old value is 0
                 fi
             fi
         fi
@@ -1069,7 +1079,7 @@ csm_migrate_hooks() {
 
         if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
             csm_report_add "WOULD COPY ${src_path} → ${dst_path} (chmod 750, rewrite /etc/csf/ paths)"
-            (( count++ )) || true
+            (( count++ )) || true  # (( )) returns 1 when old value is 0
         else
             command cp "$src_path" "$dst_path" || {
                 csm_report_add "hook: failed to copy ${src_name} → ${dst_name}"
@@ -1077,8 +1087,11 @@ csm_migrate_hooks() {
             }
             chmod 750 "$dst_path"
             # Rewrite /etc/csf/ references to install_path — | delimiter safe (paths never contain |)
-            sed -i "s|/etc/csf/|${install_path}/|g" "$dst_path"
-            (( count++ )) || true
+            # Escape & and \ in install_path to prevent sed metachar expansion
+            local safe_install_path="${install_path//\\/\\\\}"
+            safe_install_path="${safe_install_path//&/\\&}"
+            sed -i "s|/etc/csf/|${safe_install_path}/|g" "$dst_path"
+            (( count++ )) || true  # (( )) returns 1 when old value is 0
             csm_report_add "${src_name} → ${dst_name} (chmod 750, paths rewritten)"
         fi
     done
@@ -1105,11 +1118,11 @@ csm_migrate_lfd_ignore() {
         entry="$line"
 
         if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
-            (( count++ )) || true
+            (( count++ )) || true  # (( )) returns 1 when old value is 0
         else
             if ! grep -qxF "$entry" "$dst" 2>/dev/null; then  # 2>/dev/null: dst may not exist yet
                 printf '%s\n' "$entry" >> "$dst"
-                (( count++ )) || true
+                (( count++ )) || true  # (( )) returns 1 when old value is 0
             fi
         fi
     done < "$src"
@@ -1167,11 +1180,11 @@ csm_migrate_cxs_ignore() {
 
         if [[ "${CSM_DRY_RUN:-0}" == "1" ]]; then
             csm_report_add "WOULD WRITE ${ktype}:${kval} → ${dst_file}"
-            (( count++ )) || true
+            (( count++ )) || true  # (( )) returns 1 when old value is 0
         else
             if ! grep -qxF "$entry" "$dst_file" 2>/dev/null; then  # 2>/dev/null: dst_file may not exist yet
                 printf '%s\n' "$entry" >> "$dst_file"
-                (( count++ )) || true
+                (( count++ )) || true  # (( )) returns 1 when old value is 0
             fi
         fi
     done

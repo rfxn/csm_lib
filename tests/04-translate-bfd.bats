@@ -98,3 +98,78 @@ _bfd_find() {
     [ "$_CSM_BFD_FIND_IDX" -ge 0 ]
     [ "${_CSM_BFD_TRIPS[$_CSM_BFD_FIND_IDX]}" = "apf" ]
 }
+
+# --- Re-entry safety ---
+
+@test "csm_translate_bfd is re-entry safe — calling twice gives same SSHD result" {
+    csm_translate_bfd
+    csm_translate_bfd
+    # After second call arrays are rebuilt cleanly — exactly one SSHD entry
+    local count=0
+    local i
+    for i in "${!_CSM_BFD_RULES[@]}"; do
+        if [[ "${_CSM_BFD_RULES[$i]}" == "SSHD" ]]; then
+            (( count++ )) || true
+        fi
+    done
+    [ "$count" -eq 1 ]
+}
+
+# --- csm_apply_bfd_pressure: write path ---
+
+@test "csm_apply_bfd_pressure writes RULE=TRIP lines to pressure conf file" {
+    _run_translate_bfd
+    local pconf="$TEST_TMPDIR/pressure.conf"
+    > "$pconf"
+    csm_apply_bfd_pressure "$pconf"
+    # SSHD rule should be written
+    grep -q '^SSHD="15"$' "$pconf"
+    # FIREWALL rule should be written
+    grep -q '^FIREWALL="apf"$' "$pconf"
+}
+
+@test "csm_apply_bfd_pressure appends (does not overwrite) existing content" {
+    _run_translate_bfd
+    local pconf="$TEST_TMPDIR/pressure.conf"
+    printf '# existing line\n' > "$pconf"
+    csm_apply_bfd_pressure "$pconf"
+    # Existing line preserved
+    grep -q '^# existing line$' "$pconf"
+    # New entries also present
+    grep -q '^SSHD="15"$' "$pconf"
+}
+
+@test "csm_apply_bfd_pressure returns 1 for empty pressure_conf path" {
+    run csm_apply_bfd_pressure ""
+    [ "$status" -eq 1 ]
+}
+
+# --- csm_apply_bfd_pressure: dry-run path ---
+
+@test "dryrun: csm_apply_bfd_pressure does not write to pressure conf file" {
+    CSM_DRY_RUN="1"
+    _run_translate_bfd
+    local pconf="$TEST_TMPDIR/pressure.conf"
+    > "$pconf"
+    csm_apply_bfd_pressure "$pconf"
+    # File must remain empty
+    [ ! -s "$pconf" ]
+}
+
+@test "dryrun: csm_apply_bfd_pressure adds WOULD WRITE report lines" {
+    CSM_DRY_RUN="1"
+    _CSM_REPORT_LINES=()
+    _run_translate_bfd
+    local pconf="$TEST_TMPDIR/pressure.conf"
+    > "$pconf"
+    csm_apply_bfd_pressure "$pconf"
+    local found=0
+    local line
+    for line in "${_CSM_REPORT_LINES[@]}"; do
+        if [[ "$line" == "WOULD WRITE SSHD=15"* ]]; then
+            found=1
+            break
+        fi
+    done
+    [ "$found" -eq 1 ]
+}

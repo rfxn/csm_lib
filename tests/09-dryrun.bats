@@ -135,3 +135,15 @@ teardown() { csm_teardown; }
     done
     [ "$found" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# csm_apply_var — write path (CSM_DRY_RUN=0)
+# The write path delegates to pkg_config_set (fully tested in pkg_lib).
+# This integration test verifies the delegation wiring is correct.
+# ---------------------------------------------------------------------------
+
+@test "write: csm_apply_var modifies target config file via pkg_config_set" {
+    CSM_DRY_RUN="0"
+    csm_apply_var "$MOCK_CONF" "IG_TCP_CPORTS" "1,2,3"
+    grep -q 'IG_TCP_CPORTS="1,2,3"' "$MOCK_CONF"
+}
